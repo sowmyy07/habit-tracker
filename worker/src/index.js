@@ -31,6 +31,30 @@ async function idFor(endpoint) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+// Opaque, unguessable session id (256-bit).
+function newSessionId() {
+  const b = new Uint8Array(32)
+  crypto.getRandomValues(b)
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+}
+
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
+
+// POST form-encoded params to a Google OAuth endpoint and parse the JSON.
+async function googleForm(url, params) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params),
+  })
+  let data = {}
+  try {
+    data = await res.json()
+  } catch {}
+  return { ok: res.ok, status: res.status, data }
+}
+
 function vapidFrom(env) {
   return {
     publicKey: env.VAPID_PUBLIC_KEY,
@@ -110,6 +134,79 @@ export default {
       body = await request.json()
     } catch {
       return json({ error: 'bad json' }, 400, origin)
+    }
+
+    // ---- Auth broker (persistent sign-in) --------------------------------
+
+    // Exchange a one-time authorization code for tokens. Keep the refresh token
+    // server-side; return an opaque session id + the first access token.
+    if (url.pathname === '/auth/exchange') {
+      const { code, redirect_uri } = body
+      if (!code || !redirect_uri) return json({ error: 'missing code/redirect_uri' }, 400, origin)
+      if (!ALLOWED_ORIGINS.includes(redirect_uri)) return json({ error: 'bad redirect_uri' }, 400, origin)
+
+      const { ok, status, data } = await googleForm(GOOGLE_TOKEN_URL, {
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri,
+      })
+      if (!ok) return json({ error: 'exchange_failed', detail: data.error || status }, 400, origin)
+
+      const { access_token, expires_in, refresh_token } = data
+      if (!refresh_token) {
+        // No offline grant this time — the client stays signed in for this
+        // session only (can't be persisted without a refresh token).
+        return json({ persisted: false, access_token, expires_in }, 200, origin)
+      }
+      const session_id = newSessionId()
+      await env.SESSIONS.put(
+        session_id,
+        JSON.stringify({ refresh_token, createdAt: Date.now() })
+      )
+      return json({ persisted: true, session_id, access_token, expires_in }, 200, origin)
+    }
+
+    // Trade a session id for a fresh access token (using the stored refresh token).
+    if (url.pathname === '/auth/token') {
+      const { session_id } = body
+      if (!session_id) return json({ error: 'no session_id' }, 400, origin)
+      const raw = await env.SESSIONS.get(session_id)
+      if (!raw) return json({ error: 'no_session' }, 401, origin)
+      const rec = JSON.parse(raw)
+
+      const { ok, status, data } = await googleForm(GOOGLE_TOKEN_URL, {
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        grant_type: 'refresh_token',
+        refresh_token: rec.refresh_token,
+      })
+      if (!ok) {
+        // Refresh token revoked/expired -> drop the session, force re-sign-in.
+        if (data.error === 'invalid_grant') {
+          await env.SESSIONS.delete(session_id)
+          return json({ error: 'reauth' }, 401, origin)
+        }
+        return json({ error: 'refresh_failed', detail: data.error || status }, 400, origin)
+      }
+      return json({ access_token: data.access_token, expires_in: data.expires_in }, 200, origin)
+    }
+
+    // Revoke and forget a session (sign out).
+    if (url.pathname === '/auth/revoke') {
+      const { session_id } = body
+      if (session_id) {
+        const raw = await env.SESSIONS.get(session_id)
+        if (raw) {
+          const rec = JSON.parse(raw)
+          try {
+            await googleForm(GOOGLE_REVOKE_URL, { token: rec.refresh_token })
+          } catch {}
+          await env.SESSIONS.delete(session_id)
+        }
+      }
+      return json({ ok: true }, 200, origin)
     }
 
     if (url.pathname === '/subscribe') {
