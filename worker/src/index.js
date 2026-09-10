@@ -8,7 +8,7 @@
 
 import { sendPush } from './webpush.js'
 
-const ALLOWED_ORIGINS = ['https://sowmyy.github.io', 'http://localhost:5173']
+const ALLOWED_ORIGINS = ['https://sowmyy07.github.io', 'http://localhost:5173']
 
 function cors(origin) {
   const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]

@@ -108,7 +108,7 @@ token broker. One-time setup:
    - Under **Authorized redirect URIs**, add every origin you run from (the
      popup exchange sends the page origin as `redirect_uri`):
      - `http://localhost:5173`
-     - your deployed origin, e.g. `https://sowmyy.github.io`
+     - your deployed origin, e.g. `https://sowmyy07.github.io`
    - Copy the client **secret** from the same client (it's shown next to the
      client ID). Unlike the client ID, this **is** a secret — it lives only on
      the Worker.
