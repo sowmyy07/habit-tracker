@@ -98,6 +98,40 @@ Vercel, GitHub Pages, Cloudflare Pages, Firebase Hosting.
 
 ---
 
+## Persistent sign-in setup
+
+Persistent sessions use the OAuth **authorization-code** flow, which needs a
+server-side code→token exchange. The existing Cloudflare Worker doubles as the
+token broker. One-time setup:
+
+1. **Google Cloud → Credentials → your OAuth client:**
+   - Under **Authorized redirect URIs**, add every origin you run from (the
+     popup exchange sends the page origin as `redirect_uri`):
+     - `http://localhost:5173`
+     - your deployed origin, e.g. `https://sowmyy07.github.io`
+   - Copy the client **secret** from the same client (it's shown next to the
+     client ID). Unlike the client ID, this **is** a secret — it lives only on
+     the Worker.
+2. **Worker config** (`worker/`):
+   - `GOOGLE_CLIENT_ID` is set in `wrangler.toml` (public, safe to commit).
+   - Create the sessions KV namespace and paste its id into `wrangler.toml`:
+     ```bash
+     npx wrangler kv namespace create SESSIONS
+     ```
+   - Store the client secret (never commit it):
+     ```bash
+     npx wrangler secret put GOOGLE_CLIENT_SECRET
+     ```
+   - Deploy: `npx wrangler deploy`
+3. **App config:** set `VITE_PUSH_API` to the Worker URL in `.env.local` (dev)
+   and `.env.production` (build). Sign-in requires it.
+
+The Worker keeps each device's refresh token in the `SESSIONS` KV namespace and
+returns only an opaque session id to the browser. Signing out revokes the
+refresh token and deletes the session.
+
+---
+
 ## Project layout
 
 ```
@@ -119,6 +153,9 @@ src/
 - Habits are **locked** once you confirm the tracker (by design).
 - Habits are simple done/not-done checkboxes.
 - "Today" uses the device's local date.
-- Because the browser OAuth token is short-lived and only granted on a click, you
-  sign in each time you open the app (the token lasts ~1 hour per session).
-- Not yet included: numeric-count habits, editing habits mid-period, push reminders.
+- **Sign-in is persistent.** The app uses the OAuth authorization-code flow: the
+  Worker exchanges the code for a refresh token (kept server-side) and hands the
+  browser fresh 1-hour access tokens on demand. You sign in once per device — the
+  session survives app restarts on web and installed mobile PWAs. See
+  [Persistent sign-in setup](#persistent-sign-in-setup).
+- Not yet included: numeric-count habits, editing habits mid-period.
